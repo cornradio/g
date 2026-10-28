@@ -359,7 +359,7 @@ function g {
     function Test-NonClean($item) {
         if (-not $item.IsRepo) { return $false; }
         if (Test-Ignored $item.FullName) { return $false; }
-        return ($item.Dirty -gt 0);
+        return ($item.Dirty -gt 0 -or $item.Ahead -gt 0 -or $item.Behind -gt 0);
     }
 
     function Get-SelectedItem {
