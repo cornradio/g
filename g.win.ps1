@@ -11,8 +11,11 @@ function g {
     $defaultMessage = "update";
     $currentPath = (Get-Location).Path;
     $items = @();
+    $shown = @();
     $itemsPath = "";
     $here = $null;
+    $dirtyOnly = $false;
+    $pendingKeep = "";
     $pendingSelectName = "";
     $drawnPage = -1;
     $idCache = @{};
@@ -353,9 +356,15 @@ function g {
         return $null;
     }
 
+    function Test-NonClean($item) {
+        if (-not $item.IsRepo) { return $false; }
+        if (Test-Ignored $item.FullName) { return $false; }
+        return ($item.Dirty -gt 0);
+    }
+
     function Get-SelectedItem {
-        if ($items.Count -gt 0 -and $selectedIndex -ge 0 -and $selectedIndex -lt $items.Count) {
-            return $items[$selectedIndex];
+        if ($shown.Count -gt 0 -and $selectedIndex -ge 0 -and $selectedIndex -lt $shown.Count) {
+            return $shown[$selectedIndex];
         }
         return $null;
     }
@@ -368,8 +377,8 @@ function g {
     }
 
     function Get-Target {
-        if ($items.Count -gt 0 -and $selectedIndex -ge 0 -and $selectedIndex -lt $items.Count) {
-            $sel = $items[$selectedIndex];
+        if ($shown.Count -gt 0 -and $selectedIndex -ge 0 -and $selectedIndex -lt $shown.Count) {
+            $sel = $shown[$selectedIndex];
             if ($sel.IsRepo) { return $sel; }
         }
         return $here;
@@ -551,20 +560,30 @@ function g {
                 }
                 $itemsPath = $currentPath;
                 $drawnPage = -1;
-                if ($pendingSelectName) {
-                    $found = 0;
-                    for ($idx = 0; $idx -lt $items.Count; $idx++) {
-                        if ($items[$idx].Name -eq $pendingSelectName) { $found = $idx; break; }
-                    }
-                    $selectedIndex = $found;
-                    $pendingSelectName = "";
-                } else {
-                    $selectedIndex = 0;
-                }
+                if (-not $pendingSelectName) { $selectedIndex = 0; }
                 Clear-Host;
             }
 
-            $totalCount = $items.Count;
+            $shown = if ($dirtyOnly) { @($items | Where-Object { Test-NonClean $_ }) } else { @($items) };
+            if ($pendingSelectName) {
+                $found = 0;
+                for ($idx = 0; $idx -lt $shown.Count; $idx++) {
+                    if ($shown[$idx].Name -eq $pendingSelectName) { $found = $idx; break; }
+                }
+                $selectedIndex = $found;
+                $pendingSelectName = "";
+            }
+            if ($pendingKeep) {
+                $keepNorm = Get-Norm $pendingKeep;
+                $found = 0;
+                for ($idx = 0; $idx -lt $shown.Count; $idx++) {
+                    if ((Get-Norm $shown[$idx].FullName) -eq $keepNorm) { $found = $idx; break; }
+                }
+                $selectedIndex = $found;
+                $pendingKeep = "";
+            }
+
+            $totalCount = $shown.Count;
             if ($totalCount -gt 0) {
                 if ($selectedIndex -ge $totalCount) { $selectedIndex = $totalCount - 1; }
                 if ($selectedIndex -lt 0) { $selectedIndex = 0; }
@@ -578,7 +597,7 @@ function g {
             $nameMax = 2;
             $branchMax = 0;
             $statusMax = 5;
-            foreach ($item in $items) {
+            foreach ($item in $shown) {
                 $label = $item.Name;
                 if ($item.IsDir -and -not $item.IsRepo) { $label += "\"; }
                 $nw = 4 + (Get-VisualWidth $label);
@@ -624,13 +643,14 @@ function g {
             Write-FittedLine (Get-Rule) "DarkGray" $null;
 
             if ($totalCount -eq 0) {
-                Write-FittedLine "  <Empty>" "DarkGray" $null;
+                $emptyText = if ($dirtyOnly) { "  <no dirty>" } else { "  <Empty>" };
+                Write-FittedLine $emptyText "DarkGray" $null;
                 for ($k = 1; $k -lt $pageSize; $k++) { Write-FittedLine "" "White" $null; }
             } else {
                 for ($i = 0; $i -lt $pageSize; $i++) {
                     $actual = $startIndex + $i;
                     if ($actual -lt $totalCount) {
-                        $item = $items[$actual];
+                        $item = $shown[$actual];
                         if ($actual -eq $selectedIndex) {
                             Write-FittedLine (Get-RowText $item) "White" "DarkCyan";
                         } else {
@@ -644,7 +664,8 @@ function g {
 
             Write-FittedLine (Get-Rule) "DarkGray" $null;
             $pageTag = " $($currentPage + 1)/$totalPages";
-            Write-FittedLine " $pageTag  [C] Commit  [Shift+C] Edit  [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
+            if ($dirtyOnly) { $pageTag += "  dirty"; }
+            Write-FittedLine " $pageTag  [Y] Dirty  [C] Commit  [Shift+C] Edit  [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
 
             $key = Read-ActionKey;
             $isUp = $key.Key -eq 'UpArrow' -or $key.KeyChar -eq 'k' -or $key.KeyChar -eq 'K';
@@ -673,9 +694,16 @@ function g {
                 continue;
             }
             if ($isRight) {
-                if ($totalCount -gt 0 -and $items[$selectedIndex].IsDir) {
-                    $currentPath = $items[$selectedIndex].FullName;
+                if ($totalCount -gt 0 -and $shown[$selectedIndex].IsDir) {
+                    $currentPath = $shown[$selectedIndex].FullName;
                 }
+                continue;
+            }
+            if ($key.Key -eq 'Y') {
+                $keep = Get-SelectedItem;
+                $pendingKeep = if ($keep) { $keep.FullName } else { "" };
+                $dirtyOnly = -not $dirtyOnly;
+                $drawnPage = -1;
                 continue;
             }
             if ($key.Key -eq 'Q' -or $key.Key -eq 'Escape') {
@@ -712,7 +740,7 @@ function g {
 
             if ($key.Key -eq 'D') {
                 if ($totalCount -gt 0) {
-                    $selectedItem = $items[$selectedIndex];
+                    $selectedItem = $shown[$selectedIndex];
                     $skipConfirm = $key.Modifiers.HasFlag([ConsoleModifiers]::Shift);
                     $shouldDelete = $false;
                     if ($skipConfirm) {
@@ -921,8 +949,8 @@ function g {
                         }
                     }
                     Clear-Host;
-                } elseif ($totalCount -gt 0 -and $items[$selectedIndex].IsDir) {
-                    $currentPath = $items[$selectedIndex].FullName;
+                } elseif ($totalCount -gt 0 -and $shown[$selectedIndex].IsDir) {
+                    $currentPath = $shown[$selectedIndex].FullName;
                 }
                 continue;
             }
