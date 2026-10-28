@@ -15,6 +15,7 @@ function g {
     $itemsPath = "";
     $here = $null;
     $dirtyOnly = $false;
+    $find = "";
     $pendingKeep = "";
     $pendingSelectName = "";
     $drawnPage = -1;
@@ -356,10 +357,25 @@ function g {
         return $null;
     }
 
-    function Test-NonClean($item) {
+    function Test-Count($value) {
+        $text = "$value".Trim();
+        if ($text -match '^\d+$') { return [int]$text; }
+        return 0;
+    }
+
+    function Test-Open($item) {
         if (-not $item.IsRepo) { return $false; }
         if (Test-Ignored $item.FullName) { return $false; }
-        return ($item.Dirty -gt 0 -or $item.Ahead -gt 0 -or $item.Behind -gt 0);
+        if ((Test-Count $item.Dirty) -gt 0) { return $true; }
+        if ((Test-Count $item.Ahead) -gt 0) { return $true; }
+        if ((Test-Count $item.Behind) -gt 0) { return $true; }
+        return $false;
+    }
+
+    function Test-Named($item) {
+        if ([string]::IsNullOrWhiteSpace($find)) { return $true; }
+        if (-not $item.Name) { return $false; }
+        return ($item.Name.IndexOf($find, [System.StringComparison]::OrdinalIgnoreCase) -ge 0);
     }
 
     function Get-SelectedItem {
@@ -560,11 +576,18 @@ function g {
                 }
                 $itemsPath = $currentPath;
                 $drawnPage = -1;
+                $find = "";
                 if (-not $pendingSelectName) { $selectedIndex = 0; }
                 Clear-Host;
             }
 
-            $shown = if ($dirtyOnly) { @($items | Where-Object { Test-NonClean $_ }) } else { @($items) };
+            $picked = New-Object System.Collections.Generic.List[object];
+            foreach ($item in @($items)) {
+                if (-not (Test-Named $item)) { continue; }
+                if ($dirtyOnly -and -not (Test-Open $item)) { continue; }
+                $picked.Add($item);
+            }
+            $shown = @($picked.ToArray());
             if ($pendingSelectName) {
                 $found = 0;
                 for ($idx = 0; $idx -lt $shown.Count; $idx++) {
@@ -625,6 +648,7 @@ function g {
             $idColor = if ([string]::IsNullOrWhiteSpace($id.Name) -or [string]::IsNullOrWhiteSpace($id.Email)) { "Red" } else { "Cyan" };
 
             $whereText = "  $currentPath";
+            if ($find) { $whereText += "  /$find"; }
             $whereColor = "Cyan";
             if ($here) {
                 $hereTag = if ($here.Dirty -eq 0 -or (Test-Ignored $here.FullName)) { "clean" } else { "$($here.Dirty)" };
@@ -635,6 +659,7 @@ function g {
                     if ($here.Behind -gt 0) { $whereText += " -$($here.Behind)"; }
                 }
                 $whereColor = if ((Test-Ignored $here.FullName) -or $here.Dirty -eq 0) { "Green" } else { "Yellow" };
+                if ($find) { $whereText += "  /$find"; }
             }
 
             [Console]::SetCursorPosition(0, 0);
@@ -643,7 +668,7 @@ function g {
             Write-FittedLine (Get-Rule) "DarkGray" $null;
 
             if ($totalCount -eq 0) {
-                $emptyText = if ($dirtyOnly) { "  <no dirty>" } else { "  <Empty>" };
+                $emptyText = if ($find) { "  <no match>" } elseif ($dirtyOnly) { "  <no dirty>" } else { "  <Empty>" };
                 Write-FittedLine $emptyText "DarkGray" $null;
                 for ($k = 1; $k -lt $pageSize; $k++) { Write-FittedLine "" "White" $null; }
             } else {
@@ -665,7 +690,7 @@ function g {
             Write-FittedLine (Get-Rule) "DarkGray" $null;
             $pageTag = " $($currentPage + 1)/$totalPages";
             if ($dirtyOnly) { $pageTag += "  dirty"; }
-            Write-FittedLine " $pageTag  [Y] Dirty  [C] Commit  [Shift+C] Edit  [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
+            Write-FittedLine " $pageTag  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit  [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
 
             $key = Read-ActionKey;
             $isUp = $key.Key -eq 'UpArrow' -or $key.KeyChar -eq 'k' -or $key.KeyChar -eq 'K';
@@ -703,6 +728,24 @@ function g {
                 $keep = Get-SelectedItem;
                 $pendingKeep = if ($keep) { $keep.FullName } else { "" };
                 $dirtyOnly = -not $dirtyOnly;
+                $drawnPage = -1;
+                continue;
+            }
+            if ($key.KeyChar -eq '/') {
+                [Console]::CursorVisible = $true;
+                Write-Host "";
+                $filterInput = Read-Host "  Search (empty clears)";
+                [Console]::CursorVisible = $false;
+                $find = if ($null -eq $filterInput) { "" } else { $filterInput.Trim() };
+                $keep = Get-SelectedItem;
+                $pendingKeep = if ($keep) { $keep.FullName } else { "" };
+                $drawnPage = -1;
+                Clear-Host;
+                continue;
+            }
+            if ($key.Key -eq 'Escape' -and $find) {
+                $find = "";
+                $selectedIndex = 0;
                 $drawnPage = -1;
                 continue;
             }
