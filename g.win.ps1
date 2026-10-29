@@ -30,7 +30,7 @@ function g {
         return ("$value").Trim();
     }
 
-    $ignorePath = "C:\Users\kasus\Documents\GitHub\g\ignore.json";
+    $ignorePath = Join-Path $currentPath "ignore.json";
     $ignored = @{};
 
     function Read-Ignored {
@@ -49,6 +49,7 @@ function g {
         $paths = @($ignored.Keys | Sort-Object);
         $json = @{ paths = $paths } | ConvertTo-Json -Compress;
         $utf8 = New-Object System.Text.UTF8Encoding $false;
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($ignorePath));
         [System.IO.File]::WriteAllText($ignorePath, $json, $utf8);
     }
 
@@ -690,7 +691,8 @@ function g {
             Write-FittedLine (Get-Rule) "DarkGray" $null;
             $pageTag = " $($currentPage + 1)/$totalPages";
             if ($dirtyOnly) { $pageTag += "  dirty"; }
-            Write-FittedLine " $pageTag  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit  [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
+            Write-FittedLine " $pageTag  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit" "Green" $null;
+            Write-FittedLine " [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
 
             $key = Read-ActionKey;
             $isUp = $key.Key -eq 'UpArrow' -or $key.KeyChar -eq 'k' -or $key.KeyChar -eq 'K';
@@ -826,9 +828,19 @@ function g {
                 elseif ($target) { $markPath = $target.FullName; }
                 if ($markPath) {
                     $norm = Get-Norm $markPath;
-                    if ($ignored.ContainsKey($norm)) { [void]$ignored.Remove($norm); }
+                    $wasIgnored = $ignored.ContainsKey($norm);
+                    if ($wasIgnored) { [void]$ignored.Remove($norm); }
                     else { $ignored[$norm] = $true; }
-                    Save-Ignored;
+                    try {
+                        Save-Ignored;
+                    } catch {
+                        if ($wasIgnored) { $ignored[$norm] = $true; }
+                        else { [void]$ignored.Remove($norm); }
+                        Clear-Host;
+                        Write-Host "  Save ignore list failed ($ignorePath): $_" -ForegroundColor Red;
+                        Wait-AnyKey;
+                        Clear-Host;
+                    }
                 }
                 continue;
             }
