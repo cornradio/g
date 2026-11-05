@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import codecs
 import curses
 import json
 import locale
@@ -16,7 +17,7 @@ PAGE_SIZE = 15
 DEFAULT_MESSAGE = "update"
 
 
-def git(path, *args, non_interactive=False):
+def git(path, *args, non_interactive=False, stream=False):
     env = None
     options = []
     if non_interactive:
@@ -28,8 +29,30 @@ def git(path, *args, non_interactive=False):
             GCM_INTERACTIVE="never",
         )
         options = ["-c", "credential.interactive=false"]
+    command = ["git", "-C", str(path), *options, *args]
+    if stream:
+        output = []
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        with subprocess.Popen(
+            command,
+            env=env,
+            stdin=subprocess.DEVNULL if non_interactive else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        ) as process:
+            while True:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                text = decoder.decode(chunk)
+                output.append(text)
+                print(text, end="", flush=True)
+            tail = decoder.decode(b"", final=True)
+            output.append(tail)
+            print(tail, end="", flush=True)
+            return subprocess.CompletedProcess(command, process.wait(), "".join(output), "")
     return subprocess.run(
-        ["git", "-C", str(path), *options, *args],
+        command,
         env=env,
         stdin=subprocess.DEVNULL if non_interactive else None,
         text=True,
@@ -482,11 +505,21 @@ class Browser:
             direction = f"{row['upstream']} -> {row['branch']}" if action == "pull" and row["upstream"] else (
                 f"{row['branch']} -> {row['upstream']}" if row["upstream"] else f"{remote}/{row['branch']}"
             )
-            result = git(path, *args, non_interactive=True)
-            output = result.stdout + result.stderr
-            if result.returncode:
-                output += authentication_help(path, output)
-            self.message(f"{action.title()} {direction}", output=output)
+            args.insert(1, "--progress")
+            self.suspend()
+            try:
+                print(f"  {action.title()} {direction}\n  Running...\n", flush=True)
+                result = git(path, *args, non_interactive=True, stream=True)
+                if result.returncode:
+                    print(f"\n  Git exited with status {result.returncode}.", flush=True)
+                    guide = authentication_help(path, result.stdout)
+                    if guide:
+                        print(guide, flush=True)
+                else:
+                    print("\n  Done.", flush=True)
+                input("\n  Press Enter to return...")
+            finally:
+                self.resume()
 
     def show_status(self, row):
         if not row:
