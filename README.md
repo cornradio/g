@@ -34,3 +34,29 @@ code $PROFILE
 ```
 
 把 [g.win.ps1](g.win.ps1) 里的 `function g` 整段贴到最后，保存。新开一个终端，输入 `g`。
+
+## macOS 安装
+
+先确认已安装 Git 和 Python 3。然后按下面步骤操作：
+
+1. 打开“终端”。
+2. 输入下面这行并按回车，打开 zsh 配置文件：
+
+   ```sh
+   nano ~/.zshrc
+   ```
+
+3. 用键盘方向键移到文件末尾，另起一行，粘贴下面这行：
+
+   ```sh
+   source /Users/kasusa/Documents/GitHub/g/g.mac.zsh
+   ```
+
+   如果你把仓库放在别的地方，请把上面的路径改成你的 `g.mac.zsh` 文件实际位置。
+
+4. 按 `Control + O` 保存，按回车确认文件名，再按 `Control + X` 退出。
+5. 回到终端，输入 `g` 并按回车即可启动。
+
+退出时，终端会切换到浏览器当前所在的目录。
+
+macOS 版保留 Windows 版的主要快捷键和 Git 操作。按 `d` 会通过 Finder 将文件或文件夹移到废纸篓；VS Code 和 GitHub Desktop 快捷键分别使用 `code` 命令和应用程序名称打开。
