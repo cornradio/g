@@ -11,6 +11,7 @@
 | `↑` `↓` 或 `j` `k` | 移动 |
 | `←` `→` | 返回上级 / 进入文件夹 |
 | `l` | 拉取当前分支 |
+| `r`（macOS） | 刷新当前目录的文件列表、仓库状态和忽略标记，保留搜索和筛选条件。不会执行 fetch 或 pull |
 | `Enter` | 看这个仓库的 `git status`。在这个画面里按 `r` 会丢掉全部改动（已跟踪的改动和未跟踪的新文件），要再确认一次 |
 | `c` | 直接用 `update` 提交并刷新列表，不进入画面 |
 | `Shift+C` | 进入编辑。说明已经写好 `update`，可以改，回车提交 |
@@ -60,3 +61,32 @@ code $PROFILE
 退出时，终端会切换到浏览器当前所在的目录。
 
 macOS 版保留 Windows 版的主要快捷键和 Git 操作。按 `d` 会通过 Finder 将文件或文件夹移到废纸篓；VS Code 和 GitHub Desktop 快捷键分别使用 `code` 命令和应用程序名称打开。
+
+macOS 版按 `r` 可手动刷新。pull、push、提交后，在结果画面按回车返回时会自动刷新列表；失败后也会重新读取状态。注意：`r` 只读取本地状态，远程超前/落后数量以最近一次 fetch 或 pull 得到的信息为准。在 `git status` 画面中，`r` 仍然是丢弃改动，需要再次确认。
+
+### pull / push 的认证提示
+
+macOS 版 pull / push 会继续使用 Git 已配置的凭据助手，但禁止 Git 弹出 `Username for 'https://github.com':` 或密码输入提示。认证失败时会显示原始错误，并在终端结果画面给出配置命令；不会自动修改你的登录配置。
+
+如果你已经通过 GitHub CLI（`gh`）登录，退出 `g` 后在终端依次执行，先检查并复用现有登录：
+
+```sh
+gh auth status
+gh auth setup-git
+```
+
+只有 `gh auth status` 提示尚未登录时，才需要：
+
+```sh
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git
+```
+
+没有安装 `gh` 时，也可以选择 macOS 钥匙串方式。在对应仓库目录下执行：
+
+```sh
+git config --global credential.helper osxkeychain
+git pull
+```
+
+这次手动 `git pull` 可能要求输入 GitHub 用户名和个人访问令牌（不是账户密码），成功后保存在钥匙串。不要把令牌写进远程 URL 或发到聊天中。SSH 地址使用 SSH 密钥认证，和 HTTPS 登录是两套配置；程序显示的指南也会提示检查远程地址与仓库权限。

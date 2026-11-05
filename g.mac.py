@@ -4,6 +4,7 @@ import json
 import locale
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,14 +16,63 @@ PAGE_SIZE = 15
 DEFAULT_MESSAGE = "update"
 
 
-def git(path, *args):
+def git(path, *args, non_interactive=False):
+    env = None
+    options = []
+    if non_interactive:
+        env = os.environ.copy()
+        env.update(
+            GIT_TERMINAL_PROMPT="0",
+            GIT_ASKPASS="/usr/bin/false",
+            SSH_ASKPASS="/usr/bin/false",
+            GCM_INTERACTIVE="never",
+        )
+        options = ["-c", "credential.interactive=false"]
     return subprocess.run(
-        ["git", "-C", str(path), *args],
+        ["git", "-C", str(path), *options, *args],
+        env=env,
+        stdin=subprocess.DEVNULL if non_interactive else None,
         text=True,
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+    )
+
+
+def authentication_help(path, output):
+    markers = (
+        "could not read username", "could not read password",
+        "unable to get password from user", "unable to get username from user",
+        "terminal prompts disabled", "authentication failed",
+        "authentication required", "invalid username or",
+        "invalid credentials", "permission denied (publickey",
+        "could not read from remote repository",
+        "requested url returned error: 401", "requested url returned error: 403",
+    )
+    if not any(marker in output.casefold() for marker in markers):
+        return ""
+    return (
+        "\n\n  Authentication failed. g does not ask for a username or password.\n"
+        "  Existing credential helpers are still used; no login settings were changed.\n"
+        "  Exit g and run these commands in your terminal:\n\n"
+        f"    cd -- {shlex.quote(str(path))}\n"
+        "    git remote -v\n"
+        "    git config --show-origin --get-all credential.helper\n\n"
+        "  GitHub HTTPS + GitHub CLI (gh): reuse your existing login first:\n\n"
+        "    gh auth status\n"
+        "    gh auth setup-git\n\n"
+        "  Only if gh reports that you are not logged in:\n\n"
+        "    gh auth login --hostname github.com --git-protocol https --web\n"
+        "    gh auth setup-git\n\n"
+        "  Without gh, you can use the macOS Keychain helper:\n\n"
+        "    git config --global credential.helper osxkeychain\n"
+        "    git pull\n\n"
+        "  That one-time manual pull may ask for your GitHub username and a personal\n"
+        "  access token (NOT your account password), then save it in Keychain.\n"
+        "  If remote -v shows an SSH URL, HTTPS credentials do not apply;\n"
+        "  configure your SSH key instead. Also check access to the repository.\n"
+        "  Never paste your token into chat or put it in the remote URL.\n"
     )
 
 
@@ -179,7 +229,7 @@ class Browser:
         curses.init_pair(3, curses.COLOR_YELLOW, -1)
         curses.init_pair(4, curses.COLOR_RED, -1)
         curses.init_pair(5, curses.COLOR_WHITE, -1)
-        curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_CYAN)
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_YELLOW)
         curses.curs_set(0)
 
     def load_directory(self):
@@ -324,7 +374,7 @@ class Browser:
         footer = max(4 + PAGE_SIZE, height - 3)
         self.write(footer, 0, "─" * max(1, width), curses.color_pair(5))
         tag = f" {page + 1}/{pages}" + ("  dirty" if self.dirty_only else "")
-        self.write(footer + 1, 0, f"{tag}  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit", curses.color_pair(2))
+        self.write(footer + 1, 0, f"{tag}  [R] Refresh  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit", curses.color_pair(2))
         self.write(footer + 2, 0, " [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit", curses.color_pair(2))
         screen.refresh()
         return shown, selected
@@ -340,6 +390,7 @@ class Browser:
         curses.cbreak()
         curses.curs_set(0)
         self.screen.clear()
+        self.screen.clearok(True)
         self.screen.refresh()
 
     def message(self, title, command=None, path=None, output=None):
@@ -378,6 +429,13 @@ class Browser:
                 value += key
 
     def run_git_action(self, action, row):
+        try:
+            self.perform_git_action(action, row)
+        finally:
+            self.reload_directory()
+            self.screen.clearok(True)
+
+    def perform_git_action(self, action, row):
         if not row:
             self.message("Not a git repository.")
             return
@@ -424,9 +482,11 @@ class Browser:
             direction = f"{row['upstream']} -> {row['branch']}" if action == "pull" and row["upstream"] else (
                 f"{row['branch']} -> {row['upstream']}" if row["upstream"] else f"{remote}/{row['branch']}"
             )
-            result = git(path, *args)
-            self.message(f"{action.title()} {direction}", output=result.stdout + result.stderr)
-        self.reload_directory()
+            result = git(path, *args, non_interactive=True)
+            output = result.stdout + result.stderr
+            if result.returncode:
+                output += authentication_help(path, output)
+            self.message(f"{action.title()} {direction}", output=output)
 
     def show_status(self, row):
         if not row:
@@ -536,6 +596,10 @@ class Browser:
                 self.dirty_only = not self.dirty_only
                 filtered = self.shown_rows()
                 self.selected = next((i for i, row in enumerate(filtered) if row["path"] == keep), 0)
+            elif key in ("r", "R"):
+                self.ignored = ignored_paths(self.ignore_file)
+                self.reload_directory()
+                self.screen.clearok(True)
             elif key == "/":
                 keep = selected["path"] if selected else ""
                 new_find = self.prompt("  Search (empty clears): ")
