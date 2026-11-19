@@ -19,6 +19,8 @@ function g {
     $pendingKeep = "";
     $pendingSelectName = "";
     $drawnPage = -1;
+    $fastMove = $false;
+    $prevSelected = 0;
     $idCache = @{};
     $listingCache = @{};
     $globalName = "";
@@ -265,8 +267,6 @@ function g {
             if ($text -match '^user\.name\s+(.+)$') { $name = $Matches[1].Trim(); }
             if ($text -match '^user\.email\s+(.+)$') { $email = $Matches[1].Trim(); }
         }
-        $row | Add-Member -NotePropertyName UserName -NotePropertyValue $name -Force;
-        $row | Add-Member -NotePropertyName UserEmail -NotePropertyValue $email -Force;
         if ($key) { $idCache[$key] = @{ Name = $name; Email = $email }; }
     }
 
@@ -546,8 +546,14 @@ function g {
         Clear-Host;
     }
 
-    $globalName = Get-One (& git config --global --get user.name 2>$null);
-    $globalEmail = Get-One (& git config --global --get user.email 2>$null);
+    function Get-GitHubUrl([string]$path) {
+        return Get-One (& git -C $path config --local --get launcher.githuburl 2>$null);
+    }
+
+    foreach ($line in @(& git config --global --get-regexp "^user\.(name|email)$" 2>$null)) {
+        if ("$line" -match '^user\.name\s+(.+)$') { $globalName = $Matches[1].Trim(); }
+        if ("$line" -match '^user\.email\s+(.+)$') { $globalEmail = $Matches[1].Trim(); }
+    }
     if (-not $globalName) { $globalName = Get-One (& git config --get user.name 2>$null); }
     if (-not $globalEmail) { $globalEmail = Get-One (& git config --get user.email 2>$null); }
     Read-Ignored;
@@ -637,13 +643,15 @@ function g {
             $branchStop = Get-NextStop ($nameStop + $branchMax);
             $statusStop = Get-NextStop ($branchStop + $statusMax);
 
+            $useFast = $fastMove -and ($currentPage -eq $drawnPage);
+            $fastMove = $false;
             if ($currentPage -ne $drawnPage) {
                 Clear-Host;
                 $drawnPage = $currentPage;
             }
 
             $target = Get-Target;
-            $id = if ($target) { Get-Identity $target.FullName } else { @{ Name = $globalName; Email = $globalEmail } };
+            $id = if ($target -and $target.IsRepo) { Get-Identity $target.FullName } else { @{ Name = $globalName; Email = $globalEmail } };
             $idName = if ([string]::IsNullOrWhiteSpace($id.Name)) { "?" } else { $id.Name };
             $idEmail = if ([string]::IsNullOrWhiteSpace($id.Email)) { "no email" } else { $id.Email };
             $idColor = if ([string]::IsNullOrWhiteSpace($id.Name) -or [string]::IsNullOrWhiteSpace($id.Email)) { "Red" } else { "Cyan" };
@@ -663,36 +671,51 @@ function g {
                 if ($find) { $whereText += "  /$find"; }
             }
 
-            [Console]::SetCursorPosition(0, 0);
-            Write-FittedLine "  $idName <$idEmail>" $idColor $null;
-            Write-FittedLine $whereText $whereColor $null;
-            Write-FittedLine (Get-Rule) "DarkGray" $null;
-
-            if ($totalCount -eq 0) {
-                $emptyText = if ($find) { "  <no match>" } elseif ($dirtyOnly) { "  <no dirty>" } else { "  <Empty>" };
-                Write-FittedLine $emptyText "DarkGray" $null;
-                for ($k = 1; $k -lt $pageSize; $k++) { Write-FittedLine "" "White" $null; }
-            } else {
-                for ($i = 0; $i -lt $pageSize; $i++) {
-                    $actual = $startIndex + $i;
-                    if ($actual -lt $totalCount) {
-                        $item = $shown[$actual];
-                        if ($actual -eq $selectedIndex) {
-                            Write-FittedLine (Get-RowText $item) "White" "DarkCyan";
-                        } else {
-                            Write-FittedLine (Get-RowText $item) (Get-RowColor $item) $null;
-                        }
+            if ($useFast) {
+                [Console]::SetCursorPosition(0, 0);
+                Write-FittedLine "  $idName <$idEmail>" $idColor $null;
+                foreach ($actual in @($prevSelected, $selectedIndex)) {
+                    [Console]::SetCursorPosition(0, 3 + $actual - $startIndex);
+                    $item = $shown[$actual];
+                    if ($actual -eq $selectedIndex) {
+                        Write-FittedLine (Get-RowText $item) "White" "DarkCyan";
                     } else {
-                        Write-FittedLine "" "White" $null;
+                        Write-FittedLine (Get-RowText $item) (Get-RowColor $item) $null;
                     }
                 }
-            }
+            } else {
+                [Console]::SetCursorPosition(0, 0);
+                Write-FittedLine "  $idName <$idEmail>" $idColor $null;
+                Write-FittedLine $whereText $whereColor $null;
+                Write-FittedLine (Get-Rule) "DarkGray" $null;
 
-            Write-FittedLine (Get-Rule) "DarkGray" $null;
-            $pageTag = " $($currentPage + 1)/$totalPages";
-            if ($dirtyOnly) { $pageTag += "  dirty"; }
-            Write-FittedLine " $pageTag  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit" "Green" $null;
-            Write-FittedLine " [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
+                if ($totalCount -eq 0) {
+                    $emptyText = if ($find) { "  <no match>" } elseif ($dirtyOnly) { "  <no dirty>" } else { "  <Empty>" };
+                    Write-FittedLine $emptyText "DarkGray" $null;
+                    for ($k = 1; $k -lt $pageSize; $k++) { Write-FittedLine "" "White" $null; }
+                } else {
+                    for ($i = 0; $i -lt $pageSize; $i++) {
+                        $actual = $startIndex + $i;
+                        if ($actual -lt $totalCount) {
+                            $item = $shown[$actual];
+                            if ($actual -eq $selectedIndex) {
+                                Write-FittedLine (Get-RowText $item) "White" "DarkCyan";
+                            } else {
+                                Write-FittedLine (Get-RowText $item) (Get-RowColor $item) $null;
+                            }
+                        } else {
+                            Write-FittedLine "" "White" $null;
+                        }
+                    }
+                }
+
+                Write-FittedLine (Get-Rule) "DarkGray" $null;
+                $pageTag = " $($currentPage + 1)/$totalPages";
+                if ($dirtyOnly) { $pageTag += "  dirty"; }
+                Write-FittedLine " $pageTag  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit" "Green" $null;
+                Write-FittedLine " [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit" "Green" $null;
+                Write-FittedLine " [W] GitHub page  [Shift+W] Set GitHub URL" "Green" $null;
+            }
 
             $key = Read-ActionKey;
             $isUp = $key.Key -eq 'UpArrow' -or $key.KeyChar -eq 'k' -or $key.KeyChar -eq 'K';
@@ -702,13 +725,17 @@ function g {
 
             if ($isUp) {
                 if ($totalCount -gt 0) {
+                    $prevSelected = $selectedIndex;
                     if ($selectedIndex -eq 0) { $selectedIndex = $totalCount - 1; } else { $selectedIndex--; }
+                    $fastMove = ([Math]::Floor($prevSelected / $pageSize) -eq [Math]::Floor($selectedIndex / $pageSize));
                 }
                 continue;
             }
             if ($isDown) {
                 if ($totalCount -gt 0) {
+                    $prevSelected = $selectedIndex;
                     if ($selectedIndex -eq ($totalCount - 1)) { $selectedIndex = 0; } else { $selectedIndex++; }
+                    $fastMove = ([Math]::Floor($prevSelected / $pageSize) -eq [Math]::Floor($selectedIndex / $pageSize));
                 }
                 continue;
             }
@@ -972,6 +999,41 @@ function g {
                 Refresh-Repo $target.FullName;
                 Wait-AnyKey;
                 Clear-Host;
+                continue;
+            }
+
+            if ($key.Key -eq 'W') {
+                if (-not $target) { Show-NeedRepo; continue; }
+                $setOnly = $key.Modifiers.HasFlag([ConsoleModifiers]::Shift);
+                $openUrl = Get-GitHubUrl $target.FullName;
+                if ($setOnly -or -not $openUrl) {
+                    Clear-Host;
+                    [Console]::CursorVisible = $true;
+                    Write-Host "  $($target.Name) · GitHub URL" -ForegroundColor Cyan;
+                    Write-Host "  Enter saves (empty clears). Esc cancels." -ForegroundColor DarkGray;
+                    Write-Host "";
+                    $newUrl = Read-GLine " url: " $openUrl;
+                    [Console]::CursorVisible = $false;
+                    $drawnPage = -1;
+                    if ($null -eq $newUrl) { Clear-Host; continue; }
+                    $newUrl = $newUrl.Trim();
+                    if ($newUrl -and $newUrl -notmatch '^https?://') {
+                        Write-Host "";
+                        Write-Host "  URL must start with http:// or https://" -ForegroundColor Red;
+                        Wait-AnyKey;
+                        Clear-Host;
+                        continue;
+                    }
+                    if ($newUrl) {
+                        & git -C $target.FullName config --local launcher.githuburl $newUrl;
+                    } else {
+                        & git -C $target.FullName config --local --unset launcher.githuburl 2>$null;
+                    }
+                    $openUrl = $newUrl;
+                    Clear-Host;
+                    if ($setOnly) { continue; }
+                }
+                if ($openUrl) { Start-Process $openUrl; }
                 continue;
             }
 
