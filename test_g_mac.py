@@ -1,7 +1,9 @@
+import io
 import importlib.util
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -40,6 +42,8 @@ class RefreshTests(unittest.TestCase):
         self.browser.rows = g_mac.list_directory(self.root)
         self.browser.here = g_mac.current_repo(self.root)
         self.browser.message = Mock()
+        self.browser.suspend = Mock()
+        self.browser.resume = Mock()
 
     def command(self, *args):
         return subprocess.run(
@@ -63,7 +67,8 @@ class RefreshTests(unittest.TestCase):
         self.command("-C", str(self.repo), "fetch")
         self.browser.reload_directory()
         self.assertEqual(self.selected()["behind"], 1)
-        self.browser.run_git_action("pull", self.selected())
+        with patch("builtins.input", return_value=""):
+            self.browser.run_git_action("pull", self.selected())
         self.assertEqual(self.selected()["behind"], 0)
         self.assertTrue((self.repo / "new.txt").exists())
         self.assertEqual(self.browser.find, "repo")
@@ -76,7 +81,8 @@ class RefreshTests(unittest.TestCase):
         self.browser.run_git_action("commit", self.selected())
         self.assertEqual(self.selected()["dirty"], 0)
         self.assertEqual(self.selected()["ahead"], 1)
-        self.browser.run_git_action("push", self.selected())
+        with patch("builtins.input", return_value=""):
+            self.browser.run_git_action("push", self.selected())
         self.assertEqual(self.selected()["ahead"], 0)
 
     def test_refresh_after_failed_pull(self):
@@ -85,10 +91,12 @@ class RefreshTests(unittest.TestCase):
         self.command("-C", str(self.other), "add", "-A")
         self.command("-C", str(self.other), "commit", "-m", "remote change")
         self.command("-C", str(self.other), "push")
-        self.browser.run_git_action("pull", self.selected())
+        output = io.StringIO()
+        with patch("builtins.input", return_value=""), redirect_stdout(output):
+            self.browser.run_git_action("pull", self.selected())
         self.assertEqual(self.selected()["dirty"], 1)
         self.assertEqual(self.selected()["behind"], 1)
-        self.assertTrue(self.browser.message.called)
+        self.assertIn("Git exited with status", output.getvalue())
 
     def test_manual_refresh_preserves_filters_and_reads_ignore_file(self):
         (self.repo / "file.txt").write_text("external change\n")
@@ -109,8 +117,39 @@ class RefreshTests(unittest.TestCase):
                 patch.object(g_mac.curses, "noecho"), \
                 patch.object(g_mac.curses, "cbreak"), \
                 patch.object(g_mac.curses, "curs_set"):
-            self.browser.resume()
+            g_mac.Browser.resume(self.browser)
         self.browser.screen.clearok.assert_called_once_with(True)
+
+    def test_fetch_refreshes_remote_tracking_status(self):
+        (self.other / "new.txt").write_text("remote update\n")
+        self.command("-C", str(self.other), "add", "-A")
+        self.command("-C", str(self.other), "commit", "-m", "remote update")
+        self.command("-C", str(self.other), "push")
+        with patch("builtins.input", return_value=""):
+            self.browser.run_git_action("fetch", self.selected())
+        self.assertEqual(self.selected()["behind"], 1)
+        self.assertFalse((self.repo / "new.txt").exists())
+
+    def test_webpage_opens_saved_repository_url(self):
+        url = "https://github.com/example/project"
+        result = subprocess.CompletedProcess([], 0, stdout=url, stderr="")
+        with patch.object(g_mac.subprocess, "Popen") as launch:
+            with patch.object(g_mac, "git", return_value=result):
+                self.browser.open_webpage(self.selected())
+        launch.assert_called_once_with(["open", url])
+
+    def test_shift_w_saves_repository_url_without_opening_it(self):
+        url = "https://github.com/example/project"
+        self.browser.prompt = Mock(return_value=url)
+        with patch.object(g_mac.subprocess, "Popen") as launch:
+            with patch.object(
+                g_mac, "git", return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")
+            ) as run_git:
+                self.browser.open_webpage(self.selected(), set_only=True)
+        self.assertEqual(run_git.call_args_list[-1].args, (
+            str(self.repo), "config", "--local", "launcher.githuburl", url,
+        ))
+        launch.assert_not_called()
 
 
 if __name__ == "__main__":

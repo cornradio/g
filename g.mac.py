@@ -397,8 +397,9 @@ class Browser:
         footer = max(4 + PAGE_SIZE, height - 3)
         self.write(footer, 0, "─" * max(1, width), curses.color_pair(5))
         tag = f" {page + 1}/{pages}" + ("  dirty" if self.dirty_only else "")
-        self.write(footer + 1, 0, f"{tag}  [R] Refresh  [Y] Dirty  [/] Find  [C] Commit  [Shift+C] Edit", curses.color_pair(2))
-        self.write(footer + 2, 0, " [L] Pull  [P] Push  [I] Ignore  [D] Trash  [G] Desktop  [V] Code  [Q] Quit", curses.color_pair(2))
+        self.write(footer + 1, 0, f"{tag}  [R] Refresh  [F] Check remote  [Y] Dirty  [/] Find", curses.color_pair(2))
+        self.write(footer + 2, 0, " [C] Commit  [Shift+C] Edit  [L] Pull  [P] Push  [I] Ignore  [D] Trash", curses.color_pair(2))
+        self.write(footer + 3, 0, " [G] Desktop  [V] Code  [W] Web  [Shift+W] Set URL  [Q] Quit", curses.color_pair(2))
         screen.refresh()
         return shown, selected
 
@@ -463,7 +464,7 @@ class Browser:
             self.message("Not a git repository.")
             return
         path = row["path"]
-        if action in ("pull", "push") and (not row["branch"] or row["branch"].startswith("HEAD ")):
+        if action in ("pull", "push", "fetch") and (not row["branch"] or row["branch"].startswith("HEAD ")):
             self.message(f"{os.path.basename(path)} has no branch to {action}.")
             return
         if row["detached"] and action in ("pull", "push"):
@@ -517,6 +518,25 @@ class Browser:
                         print(guide, flush=True)
                 else:
                     print("\n  Done.", flush=True)
+                input("\n  Press Enter to return...")
+            finally:
+                self.resume()
+
+        elif action == "fetch":
+            if not remote:
+                self.message("No git remote.")
+                return
+            self.suspend()
+            try:
+                print(f"  Fetch {remote}\n  Checking for remote changes...\n", flush=True)
+                result = git(path, "fetch", "--prune", remote, non_interactive=True, stream=True)
+                if result.returncode:
+                    print(f"\n  Git exited with status {result.returncode}.", flush=True)
+                    guide = authentication_help(path, result.stdout)
+                    if guide:
+                        print(guide, flush=True)
+                else:
+                    print("\n  Done. Remote status refreshed.", flush=True)
                 input("\n  Press Enter to return...")
             finally:
                 self.resume()
@@ -582,6 +602,35 @@ class Browser:
                 subprocess.Popen(["open", "-a", app_name, path])
         except OSError as error:
             self.message(f"{app} could not be opened: {error}")
+
+    def open_webpage(self, row, set_only=False):
+        if not row or not row["is_repo"]:
+            self.message("Not a git repository.")
+            return
+        path = row["path"]
+        result = git(path, "config", "--local", "--get", "launcher.githuburl")
+        url = result.stdout.strip() if result.returncode == 0 else ""
+        if set_only or not url:
+            new_url = self.prompt(" GitHub URL (empty clears): ", url)
+            if new_url is None:
+                return
+            new_url = new_url.strip()
+            if new_url and not new_url.startswith(("http://", "https://")):
+                self.message("URL must start with http:// or https://")
+                return
+            if new_url:
+                result = git(path, "config", "--local", "launcher.githuburl", new_url)
+            else:
+                result = git(path, "config", "--local", "--unset", "launcher.githuburl")
+            if result.returncode and new_url:
+                self.message(result.stderr.strip() or "Could not save GitHub URL.")
+                return
+            url = new_url
+        if url and not set_only:
+            try:
+                subprocess.Popen(["open", url])
+            except OSError as error:
+                self.message(f"GitHub page could not be opened: {error}")
 
     def toggle_ignore(self, row):
         if not row:
@@ -649,6 +698,8 @@ class Browser:
                     os.path.dirname(selected["path"]) if selected else self.current_path
                 )
                 self.open_app("github", open_path)
+            elif key in ("w", "W"):
+                self.open_webpage(self.target(selected), set_only=(key == "W"))
             elif key in ("v", "V"):
                 self.open_app("code", selected["path"] if selected else self.current_path)
             elif key in ("d", "D") and selected:
@@ -662,6 +713,8 @@ class Browser:
                 self.run_git_action("pull", self.target(selected))
             elif key in ("p", "P"):
                 self.run_git_action("push", self.target(selected))
+            elif key in ("f", "F"):
+                self.run_git_action("fetch", self.target(selected))
 
 
 def main():
